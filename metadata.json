@@ -1,0 +1,6 @@
+{
+  "name": "CyberVault — CyberPanel Backup Console",
+  "description": "Aplikasi konfigurasi backup server CyberPanel dengan login terproteksi, eksekusi backup real-time dengan progress bar dan log, pengaturan jadwal otomatis permanen, serta manajemen file Google Drive.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
