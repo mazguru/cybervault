@@ -58,6 +58,78 @@ cd app
 
 *(Untuk update di kemudian hari setelah push baru dari Laragon, cukup jalankan `git pull && systemctl restart cybervault` tanpa install ulang!)*
 
+### Menghubungkan Repository GitHub dari VPS dengan SSH
+
+Jika repository sudah di-clone menggunakan HTTPS, ubah remote `origin` ke SSH agar update berikutnya menggunakan kunci SSH:
+
+1. Masuk ke VPS sebagai **user Linux yang sama** dengan user yang akan menjalankan `git pull`. Periksa kunci SSH yang tersedia:
+
+   ```bash
+   ls -la ~/.ssh
+   ```
+
+   Jika belum memiliki kunci Ed25519, buat kunci baru. Jangan menimpa kunci yang sudah digunakan untuk keperluan lain:
+
+   ```bash
+   ssh-keygen -t ed25519 -C "cybervault-vps"
+   ```
+
+   Tekan Enter untuk lokasi default. Passphrase boleh diisi untuk keamanan tambahan; jika update dijalankan secara manual, passphrase akan diminta saat kunci digunakan.
+
+2. Tampilkan **kunci publik** untuk didaftarkan ke GitHub:
+
+   ```bash
+   cat ~/.ssh/id_ed25519.pub
+   ```
+
+   Salin seluruh output yang berakhiran `.pub`. Jangan pernah membagikan atau mengunggah file privat `~/.ssh/id_ed25519`.
+
+3. Di GitHub, buka repository **Settings → Deploy keys → Add deploy key**. Beri judul seperti `CyberVault VPS`, tempel kunci publik, dan biarkan **Allow write access** tidak dicentang karena VPS hanya perlu membaca/pull source.
+
+4. Di VPS, masuk ke direktori aplikasi dan periksa remote yang ada:
+
+   ```bash
+   cd /home/backup.smkn1temon.sch.id/app
+   git remote -v
+   ```
+
+   Jika belum ada remote `origin`, tambahkan dengan alamat SSH:
+
+   ```bash
+   git remote add origin git@github.com:mazguru/cybervault.git
+   ```
+
+   Jika `origin` sudah ada tetapi masih menggunakan HTTPS, ganti URL-nya:
+
+   ```bash
+   git remote set-url origin git@github.com:mazguru/cybervault.git
+   git remote -v
+   ```
+
+   Ganti `OWNER/REPO` dengan pemilik dan nama repository GitHub. Untuk clone baru, gunakan alamat SSH sejak awal:
+
+   ```bash
+   cd /home/backup.smkn1temon.sch.id
+   git clone -b production git@github.com:mazguru/cybervault.git
+   ```
+
+5. Uji autentikasi dan izin baca repository:
+
+   ```bash
+   ssh -T git@github.com
+   git ls-remote origin
+   ```
+
+   GitHub dapat menampilkan pesan bahwa autentikasi berhasil tetapi shell tidak disediakan; itu normal. Pastikan `git ls-remote origin` menampilkan referensi branch tanpa error izin.
+
+Setelah remote SSH siap, update aplikasi dapat dilakukan dengan:
+
+```bash
+cd /home/backup.smkn1temon.sch.id/app
+git pull origin production
+sudo systemctl restart cybervault
+```
+
 ### Cara Alternatif (Jika Clone Branch `main` / Source Mentah)
 
 Jika Anda tidak memakai branch `production` dan men-clone branch `main`, baru jalankan build manual:
@@ -109,7 +181,47 @@ VITE_GOOGLE_CLIENT_ID=851865332140-e6pkpcoras5um4vh67sg77d1g05ldde7.apps.googleu
 
 ### Opsi A — Menggunakan Systemd (Direkomendasikan untuk Akses CyberPanel CLI Penuh)
 
-Agar aplikasi bisa menjalankan `cyberpanel listWebsitesJson` (mengambil daftar website otomatis) dan `cyberpanel createBackup` secara langsung dari UI, buat file `/etc/systemd/system/cybervault.service`:
+Cara ini menjalankan aplikasi sebagai **root** agar dapat mengakses perintah dan file CyberPanel. Jalankan langkah-langkah berikut melalui SSH. Periksa akun aktif:
+
+```bash
+whoami
+```
+
+Jika hasilnya `root`, lanjutkan ke langkah berikutnya—tidak perlu menjalankan `sudo -i`. Jika Anda login sebagai user biasa dan memiliki izin sudo, masuk ke shell root dengan `sudo -i`. Jika tidak memiliki izin sudo, gunakan `su -` dan masukkan password root, atau sambungkan SSH langsung sebagai root. Jika sebelumnya menjalankan `su - namauser` dari sesi root, ketik `exit` untuk kembali ke sesi root. Pastikan `whoami` menampilkan `root` sebelum membuat file service. Jangan menambahkan akun ke `sudoers` hanya untuk mengikuti panduan ini.
+
+Jika perintah `cd /home/backup.smkn1temon.sch.id/app` menampilkan `No such file or directory`, aplikasi belum di-clone ke lokasi tersebut. Pastikan website/subdomain sudah dibuat di CyberPanel, lalu periksa direktori home domain:
+
+```bash
+ls -ld /home/backup.smkn1temon.sch.id
+```
+
+Jika direktori domain tersedia, clone branch `production` ke dalamnya (ganti `OWNER/REPO` dengan repository GitHub Anda; gunakan URL SSH jika SSH GitHub sudah disiapkan):
+
+```bash
+cd /home/backup.smkn1temon.sch.id
+git clone -b production git@github.com:OWNER/REPO.git app
+```
+
+Jika direktori domain tidak ditemukan, periksa nama domain dan lokasi home website yang dibuat CyberPanel. Gunakan lokasi yang benar sebelum melanjutkan; jangan membuat folder pengganti sebelum memastikan konfigurasi website.
+
+Setelah clone selesai, lanjutkan:
+
+```bash
+cd /home/backup.smkn1temon.sch.id/app
+test -f dist/server.cjs && echo "Bundle server ditemukan"
+test -f .env && echo "File .env ditemukan"
+command -v node
+```
+
+Pastikan kedua pesan file ditemukan muncul. Jika `.env` belum ada, ikuti langkah pembuatan `.env` pada bagian sebelumnya sebelum menjalankan service.
+
+Buat file unit systemd:
+
+```bash
+nano /etc/systemd/system/cybervault.service
+```
+
+Tempel konfigurasi berikut, lalu simpan (`Ctrl+O`, `Enter`) dan keluar (`Ctrl+X`). Jika path Node.js berbeda, ganti `/usr/bin/node` dengan path yang tadi dicatat.
 
 ```ini
 [Unit]
@@ -130,7 +242,7 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-Aktifkan dan jalankan service:
+Muat ulang konfigurasi systemd, aktifkan service agar berjalan otomatis saat VPS menyala, lalu mulai:
 
 ```bash
 systemctl daemon-reload
@@ -139,11 +251,27 @@ systemctl start cybervault
 systemctl status cybervault
 ```
 
-Pastikan server merespons di port `3000`:
+Pastikan status menunjukkan `active (running)`. Jika service gagal, lihat log untuk mengetahui penyebabnya:
 
 ```bash
-curl http://127.0.0.1:3000/api/health
+journalctl -u cybervault -n 100 --no-pager
 ```
+
+Uji API dari VPS. Perintah ini seharusnya menampilkan respons JSON dengan `"ok":true`:
+
+```bash
+curl -fsS http://127.0.0.1:3000/api/health
+```
+
+Setelah mengubah file service atau konfigurasi, muat ulang dan restart service:
+
+```bash
+systemctl daemon-reload
+systemctl restart cybervault
+systemctl status cybervault
+```
+
+> **Catatan keamanan:** Karena service berjalan sebagai root, aplikasi Node.js juga memiliki hak root. Amankan panel dengan HTTPS, password admin yang kuat, dan batasi akses jaringan ke panel.
 
 ### Opsi B — Menggunakan PM2
 
@@ -208,22 +336,7 @@ Tanpa langkah ini pun, **Login Lokal** dan **`rclone` VPS** sudah langsung bisa 
 
 ## Langkah 6: Pasang `rclone` untuk Backup Otomatis 24/7 & Arsip Besar (> 45 MB)
 
-Agar scheduler backend 24/7 dapat mengunggah arsip website besar secara otomatis tanpa browser terbuka:
-
-1. Install `rclone` di server CyberPanel:
-   ```bash
-   curl https://rclone.org/install.sh | sudo bash
-   rclone config
-   ```
-   - Pilih `n` (*New remote*), beri nama `gdrive` (harus sama dengan `RCLONE_REMOTE` di `.env`).
-   - Pilih tipe `drive` (*Google Drive*) dan ikuti otorisasi akun `datacenter2@smkn1temon.sch.id`.
-2. Uji koneksi dari SSH:
-   ```bash
-   rclone lsd gdrive:
-   ```
-3. Setelah `gdrive:` aktif, panel **CyberVault** otomatis mendeteksinya:
-   - Scheduler backend 24/7 akan langsung mengunggah arsip ke `gdrive:CyberPanel-Backups`.
-   - Menu **File Google Drive** di UI tetap bisa menampilkan, memfilter, dan menghapus arsip meskipun Anda masuk memakai **Login Lokal**.
+Panduan lengkap instalasi dan autentikasi rclone pada VPS tanpa browser tersedia di [`PANDUAN_RCLONE.md`](./PANDUAN_RCLONE.md).
 
 ---
 

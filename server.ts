@@ -564,6 +564,84 @@ function findNewestLocalCyberPanelArchive(domain: string): string | null {
   return newestFile ? newestFile.fullPath : null;
 }
 
+function cleanupLocalCyberPanelArchives(domain: string): { deletedCount: number; freedBytes: number } {
+  if (!DOMAIN_REGEX.test(domain)) {
+    throw new Error(`Domain tidak valid untuk pembersihan arsip lokal: ${domain}`);
+  }
+
+  const candidateDirs = [path.resolve('/home', domain, 'backup'), path.resolve('/home/backup')];
+  const archivePrefix = `backup-${domain}-`;
+  let deletedCount = 0;
+  let freedBytes = 0;
+
+  for (const baseDir of candidateDirs) {
+    let files: string[];
+    try {
+      files = fs.readdirSync(baseDir);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw err;
+    }
+
+    for (const file of files) {
+      if (!file.startsWith(archivePrefix) || !file.endsWith('.tar.gz')) continue;
+      const resolved = path.resolve(baseDir, file);
+      if (path.dirname(resolved) !== baseDir) continue;
+
+      let stat: fs.Stats;
+      try {
+        stat = fs.lstatSync(resolved);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw err;
+      }
+      if (!stat.isFile()) continue;
+
+      fs.unlinkSync(resolved);
+      deletedCount += 1;
+      freedBytes += stat.size;
+    }
+  }
+
+  return { deletedCount, freedBytes };
+}
+
+function cleanupUploadedCyberPanelArchives(domain: string, emitLog: (level: 'INFO' | 'WARN', msg: string) => void) {
+  try {
+    const result = cleanupLocalCyberPanelArchives(domain);
+    if (result.deletedCount > 0) {
+      emitLog(
+        'INFO',
+        `${result.deletedCount} arsip lokal ${domain} dihapus setelah upload berhasil (${result.freedBytes} bytes dibebaskan).`
+      );
+    }
+  } catch (err) {
+    emitLog(
+      'WARN',
+      `Upload ${domain} berhasil, tetapi arsip lokal tidak dapat dibersihkan: ${err instanceof Error ? err.message : 'unknown error'}`
+    );
+  }
+}
+
+function cleanupUploadedLocalArchive(
+  filePath: string,
+  description: string,
+  emitLog: (level: 'INFO' | 'WARN', msg: string) => void
+) {
+  try {
+    const stat = fs.lstatSync(filePath);
+    if (!stat.isFile()) return;
+    fs.unlinkSync(filePath);
+    emitLog('INFO', `${description} ${path.basename(filePath)} dihapus setelah upload berhasil (${stat.size} bytes).`);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    emitLog(
+      'WARN',
+      `Upload berhasil, tetapi ${description.toLowerCase()} ${path.basename(filePath)} tidak dapat dihapus: ${err instanceof Error ? err.message : 'unknown error'}`
+    );
+  }
+}
+
 function createTarBuffer(entries: TarEntry[]): Buffer {
   const blocks: Buffer[] = [];
 
@@ -1102,6 +1180,7 @@ virtualHost ${domain} {
     );
     emitLog('OK', `Upload Google Drive selesai · File ID: ${uploadedFile.id}`);
 
+    const uploadedNativeArchives: Array<{ domain: string; name: string; filePath: string }> = [];
     for (const item of nativeArchives) {
       try {
         const stat = fs.statSync(item.filePath);
@@ -1117,6 +1196,7 @@ virtualHost ${domain} {
             `CyberPanel Full Backup (${item.domain})`
           );
           emitLog('OK', `Arsip native ${nativeName} terunggah (ID: ${nativeUploaded.id}).`);
+          uploadedNativeArchives.push({ domain: item.domain, name: nativeName, filePath: item.filePath });
         } else {
           emitLog(
             'WARN',
@@ -1131,6 +1211,7 @@ virtualHost ${domain} {
       }
     }
 
+    const prunedDriveNames = new Set<string>();
     if (payload.autoPruneDrive) {
       emitProgress(93, 'Menjalankan kebijakan retensi Google Drive');
       const pruneResult = await pruneOldBackupsInDrive(
@@ -1138,6 +1219,7 @@ virtualHost ${domain} {
         folder.id,
         payload.maxRetentionFiles
       );
+      pruneResult.deletedNames.forEach((name) => prunedDriveNames.add(name));
       if (pruneResult.deletedCount > 0) {
         emitLog(
           'INFO',
@@ -1146,6 +1228,29 @@ virtualHost ${domain} {
       } else {
         emitLog('INFO', `Kebijakan retensi diperiksa (batas ${payload.maxRetentionFiles} file terpenuhi).`);
       }
+    }
+
+    for (const item of uploadedNativeArchives) {
+      if (prunedDriveNames.has(item.name)) {
+        emitLog(
+          'WARN',
+          `Arsip Drive ${item.name} terhapus oleh kebijakan retensi; arsip lokal dipertahankan agar tetap ada salinan backup.`
+        );
+        continue;
+      }
+      cleanupUploadedLocalArchive(item.filePath, 'Arsip lokal', emitLog);
+      if (item.name.startsWith(`backup-${item.domain}-`)) {
+        cleanupUploadedCyberPanelArchives(item.domain, emitLog);
+      }
+    }
+
+    if (prunedDriveNames.has(uploadedFile.name)) {
+      emitLog(
+        'WARN',
+        `Snapshot ${uploadedFile.name} terhapus oleh kebijakan retensi; salinan lokal dipertahankan.`
+      );
+    } else {
+      cleanupUploadedLocalArchive(localArchivePath, 'Snapshot lokal', emitLog);
     }
 
     const durationMs = Date.now() - startedAt;
@@ -1176,6 +1281,14 @@ virtualHost ${domain} {
       await execFileAsync(rcloneBin, ['copy', item.filePath, remoteTarget], { timeout: 300000 });
       emitLog('OK', `Arsip native ${path.basename(item.filePath)} disinkronkan via rclone.`);
     }
+
+    for (const item of nativeArchives) {
+      cleanupUploadedLocalArchive(item.filePath, 'Arsip lokal', emitLog);
+      if (path.basename(item.filePath).startsWith(`backup-${item.domain}-`)) {
+        cleanupUploadedCyberPanelArchives(item.domain, emitLog);
+      }
+    }
+    cleanupUploadedLocalArchive(localArchivePath, 'Snapshot lokal', emitLog);
 
     const durationMs = Date.now() - startedAt;
     emitProgress(100, 'Backup selesai & tersinkron via rclone ke Google Drive');

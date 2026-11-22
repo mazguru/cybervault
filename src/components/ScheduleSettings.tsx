@@ -306,6 +306,10 @@ export function ScheduleSettings({ schedule, onSaveSchedule }: ScheduleSettingsP
               </div>
             </div>
           </div>
+          <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+            Untuk menghemat disk VPS, arsip CyberPanel lokal dihapus setelah berhasil diunggah ke Google Drive.
+            Jika upload gagal atau arsip tidak dapat diunggah, file lokal tetap dipertahankan.
+          </p>
 
           {/* Schedule Summary Preview */}
           <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/80 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
